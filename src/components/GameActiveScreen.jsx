@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
+import { startPitchLoop } from '../audio/pitchDetector.js';
 
-// Phase 1 sanity screen: confirms the capture graph is live by polling the
-// analyser for an RMS level. Phase 3 will replace this with the canvas.
+// Phase 2 sanity screen: level meter + console-logged smoothed pitch.
+// Phase 3 will replace this with the canvas.
 export default function GameActiveScreen({ settings, capture, onExit }) {
   const [level, setLevel] = useState(0);
+  const [pitch, setPitch] = useState(null);
   const rafRef = useRef(0);
 
   useEffect(() => {
-    const { analyser } = capture;
+    const { ctx, analyser } = capture;
     const buf = new Float32Array(analyser.fftSize);
     const tick = () => {
       analyser.getFloatTimeDomainData(buf);
@@ -17,7 +19,21 @@ export default function GameActiveScreen({ settings, capture, onExit }) {
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
+
+    const stopPitch = startPitchLoop({
+      ctx,
+      analyser,
+      onPitch: (hz, clarity) => {
+        // eslint-disable-next-line no-console
+        console.log(`pitch ${hz.toFixed(2)} Hz (clarity ${clarity.toFixed(2)})`);
+        setPitch(hz);
+      },
+    });
+
+    return () => {
+      cancelAnimationFrame(rafRef.current);
+      stopPitch();
+    };
   }, [capture]);
 
   const pct = Math.min(100, Math.round(level * 400));
@@ -70,9 +86,16 @@ export default function GameActiveScreen({ settings, capture, onExit }) {
         </dl>
       </section>
 
-      <p className="text-center text-xs text-slate-500">
-        Phase 2 will read this stream for pitch detection.
-      </p>
+      <section className="rounded-2xl border border-white/10 bg-white/5 p-5">
+        <div className="text-xs uppercase tracking-wider text-slate-400">Smoothed pitch</div>
+        <div className="mt-2 font-mono text-2xl">
+          {pitch ? `${pitch.toFixed(1)} Hz` : <span className="text-slate-500">—</span>}
+        </div>
+        <p className="mt-2 text-xs text-slate-500">
+          Values appear once clarity ≥ 0.90 for 5 consecutive frames. Open the devtools console
+          for the full log.
+        </p>
+      </section>
     </div>
   );
 }
