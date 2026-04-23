@@ -29,14 +29,21 @@ const ROAD_HALF_W = 2.6;
 const STRIPE_SPACING = 2;
 const WORLD_Y_BOTTOM = 0.2;
 const WORLD_Y_TOP = 2.3;
-// Single-octave view: tonic at the bottom, tonic+12 at the top. Pitch is not
-// folded — the player must sing in the octave above the tonic (e.g. C4→C5
-// when tonic=C). Multi-octave acceptance can come back later behind a flag.
+// Single-octave visual window: tonic at the bottom, tonic+12 at the top.
+// Dual-octave acceptance is layered on top — a pitch one octave below the
+// tonic folds up for display so the ball tracks the lower-octave singer
+// in the same band. See DUAL_OCTAVE_FOLD_SEMI below.
 const SEMITONES_IN_VIEW = 12;
 const SEMI_WORLD = (WORLD_Y_TOP - WORLD_Y_BOTTOM) / SEMITONES_IN_VIEW;
-// Pitch outside [tonic - this, tonic + 12 + this] semitones is ignored so
-// stray harmonics/noise don't yank the ball to an edge.
+// Pitch outside two octaves around the tonic is ignored so stray harmonics
+// and room noise don't yank the ball to an edge.
 const PITCH_MARGIN_SEMI = 2;
+// A pitch below the tonic by more than this folds up an octave for display.
+// 0.5 semi = 50 cents = the loosest (beginner) tolerance, so a flat-tonic
+// attempt that could still legitimately match C4 keeps the ball at the
+// tonic bar instead of jumping to the top of the upper octave. Pitches
+// flatter than this are interpreted as lower-octave scale notes.
+const DUAL_OCTAVE_FOLD_SEMI = 0.5;
 
 const BALL_R = 0.18;
 const WALL_HALFW = 2.4;
@@ -82,20 +89,26 @@ function midiToWorldY(midi, tonicMidi) {
 function hzToMidiLocal(hz) {
   return 12 * Math.log2(hz / 440) + 69;
 }
+// Fold a lower-octave pitch up so the rendered ball always sits in the
+// upper-octave band. Pitches within half a semitone of the tonic don't fold
+// — a singer barely flat of C4 should see the ball at the tonic bar, not
+// teleported to the top of the octave.
+function foldDisplayMidi(midi, tonicMidi) {
+  return midi < tonicMidi - DUAL_OCTAVE_FOLD_SEMI ? midi + 12 : midi;
+}
 function hzToWorldY(hz, tonicMidi) {
-  return midiToWorldY(hzToMidiLocal(hz), tonicMidi);
+  return midiToWorldY(foldDisplayMidi(hzToMidiLocal(hz), tonicMidi), tonicMidi);
 }
 function isHzInRange(hz, tonicMidi) {
   if (!(hz > 0)) return false;
   const midi = hzToMidiLocal(hz);
-  return midi >= tonicMidi - PITCH_MARGIN_SEMI
+  return midi >= tonicMidi - SEMITONES_IN_VIEW - PITCH_MARGIN_SEMI
       && midi <= tonicMidi + SEMITONES_IN_VIEW + PITCH_MARGIN_SEMI;
 }
 
 function noteLabel(midi) {
   const pc = ((midi % 12) + 12) % 12;
-  const octave = Math.floor(midi / 12) - 1;
-  return `${NOTE_NAMES[pc]}${octave}`;
+  return NOTE_NAMES[pc];
 }
 
 export default function GameCanvas({ settings, capture }) {
@@ -274,10 +287,12 @@ export default function GameCanvas({ settings, capture }) {
       // Live-pitch gate: the player must actually be singing the target note
       // AT the moment of contact. Without this, smoothing/silence hold lets a
       // brief blip sail the ball through — the visual ball lingers inside the
-      // hole long after the singer stopped, and that shouldn't count.
+      // hole long after the singer stopped, and that shouldn't count. Either
+      // octave of the target counts, so C3 and C4 both open the "C" wall.
       const pitchOnTarget =
         hzValid && front
-          ? Math.abs(hzToMidiLocal(hz) - front.targetMidi) * 100 <= diff.tol
+          ? (Math.abs(hzToMidiLocal(hz) - front.targetMidi) * 100 <= diff.tol ||
+             Math.abs(hzToMidiLocal(hz) - (front.targetMidi - 12)) * 100 <= diff.tol)
           : false;
 
       if (front) {

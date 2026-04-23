@@ -10,8 +10,8 @@ export default function Layout({ children }) {
         </h1>
       </header>
       <main className="flex-1">{children}</main>
-      <footer className="border-t border-white/5 px-6 py-3 text-center text-xs text-slate-500">
-        Use headphones for best results.
+      <footer className="flex flex-col items-center gap-1 border-t border-white/5 px-6 py-3 text-center text-xs text-slate-500">
+        <span>Created by Vedik Upadhyay</span>
       </footer>
     </div>
   );
