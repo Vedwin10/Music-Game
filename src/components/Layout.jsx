@@ -12,6 +12,7 @@ export default function Layout({ children }) {
       <main className="flex-1">{children}</main>
       <footer className="flex flex-col items-center gap-1 border-t border-white/5 px-6 py-3 text-center text-xs text-slate-500">
         <span>Created by Vedik Upadhyay</span>
+        <span>For Robyn Nemeth</span>
       </footer>
     </div>
   );
