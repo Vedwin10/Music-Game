@@ -51,7 +51,7 @@ const BALL_REST_Y = ROAD_Y + BALL_R;
 
 const WALL_TIME_GAP_S = 2.5;
 const Y_TAU = 0.1;               // dt-based smoothing time constant for ball Y
-const SILENCE_MS = 180;          // no valid pitch for this long → ball sinks to rest
+const SILENCE_MS = 90;           // no valid pitch for this long → ball sinks to rest
 const VFWD_TAU = 0.7;            // 1/K for first-order relaxation of forward velocity
 const BOUNCE_SPEED_MULT = 2.5;   // impulse = -baseSpeed * this on blocked contact
 
@@ -262,11 +262,20 @@ export default function GameCanvas({ settings, capture }) {
         if (!w.passed && (!front || w.s < front.s)) front = w;
       }
 
+      // Live-pitch gate: the player must actually be singing the target note
+      // AT the moment of contact. Without this, smoothing/silence hold lets a
+      // brief blip sail the ball through — the visual ball lingers inside the
+      // hole long after the singer stopped, and that shouldn't count.
+      const pitchOnTarget =
+        hzValid && front
+          ? Math.abs(hzToMidiLocal(hz) - front.targetMidi) * 100 <= diff.tol
+          : false;
+
       if (front) {
         const wallFrontS = front.s - CONTACT_OFFSET;
-        const aligned = Math.abs(state.ballY - front.y) < (front.cutoutR - BALL_R);
+        const ballInHole = Math.abs(state.ballY - front.y) < (front.cutoutR - BALL_R);
         if (proposedS >= wallFrontS) {
-          if (aligned) {
+          if (ballInHole && pitchOnTarget) {
             front.passed = true;
             state.combo += 1;
             const mult = Math.min(1 + state.combo / 5, 5);
@@ -295,12 +304,13 @@ export default function GameCanvas({ settings, capture }) {
       }
       state.walls = state.walls.filter((w) => w.s - state.ballS > CULL_RELZ);
 
-      // Aligned-with-front feedback (sphere turns green).
+      // Aligned-with-front feedback (sphere turns green). Requires the singer
+      // to be actively on pitch right now — not just a smoothed ball coasting
+      // through — so the color tracks effort, not residual motion.
       let inTune = false;
-      if (front && !front.passed) {
-        const aligned = Math.abs(state.ballY - front.y) < (front.cutoutR - BALL_R);
+      if (front && !front.passed && pitchOnTarget) {
         const relZ = front.s - state.ballS;
-        if (aligned && relZ < 20) inTune = true;
+        if (relZ < 20) inTune = true;
       }
 
       // --- Render ---
