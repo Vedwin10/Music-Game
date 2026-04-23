@@ -61,6 +61,15 @@ const Y_TAU = 0.1;               // dt-based smoothing time constant for ball Y
 const SILENCE_MS = 90;           // no valid pitch for this long → ball sinks to rest
 const VFWD_TAU = 0.7;            // 1/K for first-order relaxation of forward velocity
 const BOUNCE_SPEED_MULT = 2.5;   // impulse = -baseSpeed * this on blocked contact
+// After a successful pass, fade the wall out (alpha 1→0) over this long and
+// then cull it. Prevents the screen-filling "huge board sliding past" beat
+// that would otherwise hide the ball and the next wall.
+const PASS_FADE_MS = 280;
+// After a successful pass, hold the ball in its green state regardless of
+// live pitch. Covers the pass-through frames so the color doesn't flip to
+// gray mid-hole just because the next wall's target is different, or because
+// vibrato briefly crossed the tolerance edge.
+const SUCCESS_FLASH_MS = 220;
 
 const DIFFICULTY = {
   beginner:     { tol: 50, speed: 7 },
@@ -145,6 +154,10 @@ export default function GameCanvas({ settings, capture }) {
       nextWallS: WALL_SPACING, // first wall one spacing ahead
       score: 0,
       combo: 0,
+      // -Infinity instead of 0 so the first frames after mount don't trip
+      // the success flash (performance.now() on a warm page is large but
+      // not guaranteed > SUCCESS_FLASH_MS).
+      lastPassAtMs: -Infinity,
     };
 
     const stopPitch = startPitchLoop({
@@ -181,7 +194,8 @@ export default function GameCanvas({ settings, capture }) {
     let rafId = 0;
     let last = performance.now();
 
-    const drawWall = (w, renderZ) => {
+    const drawWall = (w, renderZ, alpha) => {
+      if (alpha <= 0) return;
       const tl = proj(-WALL_HALFW, WALL_TOP_Y, renderZ);
       const br = proj(+WALL_HALFW, WALL_BOTTOM_Y, renderZ);
       const center = proj(0, w.y, renderZ);
@@ -191,6 +205,7 @@ export default function GameCanvas({ settings, capture }) {
       const holeR = w.cutoutR * (FOCAL / renderZ);
 
       g.save();
+      g.globalAlpha = alpha;
       g.beginPath();
       g.rect(tl.sx, tl.sy, width, height);
       g.clip();
@@ -301,6 +316,8 @@ export default function GameCanvas({ settings, capture }) {
         if (proposedS >= wallFrontS) {
           if (ballInHole && pitchOnTarget) {
             front.passed = true;
+            front.passedAt = now;
+            state.lastPassAtMs = now;
             state.combo += 1;
             const mult = Math.min(1 + state.combo / 5, 5);
             state.score += Math.round(mult);
@@ -326,13 +343,21 @@ export default function GameCanvas({ settings, capture }) {
         spawnAt(state.nextWallS);
         state.nextWallS += WALL_SPACING;
       }
-      state.walls = state.walls.filter((w) => w.s - state.ballS > CULL_RELZ);
+      state.walls = state.walls.filter((w) => {
+        if (w.passed && now - w.passedAt >= PASS_FADE_MS) return false;
+        return w.s - state.ballS > CULL_RELZ;
+      });
 
       // Aligned-with-front feedback (sphere turns green). Requires the singer
       // to be actively on pitch right now — not just a smoothed ball coasting
-      // through — so the color tracks effort, not residual motion.
+      // through — so the color tracks effort, not residual motion. The
+      // post-pass success flash overrides the live check so the ball doesn't
+      // flip gray mid-hole just because the new front wall targets a
+      // different note, or because vibrato briefly crossed the tolerance.
       let inTune = false;
-      if (front && !front.passed && pitchOnTarget) {
+      if (now - state.lastPassAtMs < SUCCESS_FLASH_MS) {
+        inTune = true;
+      } else if (front && !front.passed && pitchOnTarget) {
         const relZ = front.s - state.ballS;
         if (relZ < 20) inTune = true;
       }
@@ -388,14 +413,21 @@ export default function GameCanvas({ settings, capture }) {
       }
 
       // Walls split around the sphere so passed walls (closer to camera than
-      // the ball) render ON TOP of the sphere, matching their depth.
+      // the ball) render ON TOP of the sphere, matching their depth. Passed
+      // walls fade out over PASS_FADE_MS so the ball and the next wall
+      // remain visible through the big close-camera silhouette.
       const renderable = state.walls
-        .map((w) => ({ w, renderZ: (w.s - state.ballS) + BALL_Z_HOME }))
-        .filter((r) => r.renderZ > 0.4)
+        .map((w) => {
+          const alpha = w.passed
+            ? Math.max(0, 1 - (now - w.passedAt) / PASS_FADE_MS)
+            : 1;
+          return { w, renderZ: (w.s - state.ballS) + BALL_Z_HOME, alpha };
+        })
+        .filter((r) => r.renderZ > 0.4 && r.alpha > 0)
         .sort((a, b) => b.renderZ - a.renderZ);
 
       for (const r of renderable) {
-        if (r.renderZ > BALL_Z_HOME) drawWall(r.w, r.renderZ);
+        if (r.renderZ > BALL_Z_HOME) drawWall(r.w, r.renderZ, r.alpha);
       }
 
       // Ball shadow on road.
@@ -430,7 +462,7 @@ export default function GameCanvas({ settings, capture }) {
 
       // Walls that are already behind the ball render on top of it.
       for (const r of renderable) {
-        if (r.renderZ <= BALL_Z_HOME) drawWall(r.w, r.renderZ);
+        if (r.renderZ <= BALL_Z_HOME) drawWall(r.w, r.renderZ, r.alpha);
       }
 
       const prev = hudRef.current;
