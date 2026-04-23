@@ -4,8 +4,8 @@ import { PitchDetector } from 'pitchy';
 // noiseSuppression disabled routinely oscillates across that line on sustained
 // vowels, which starves the game of updates. 0.8 keeps breath/consonant noise
 // out while still passing normal singing.
-const CLARITY_THRESHOLD = 0.8;
-const MEDIAN_WINDOW = 5;
+const CLARITY_THRESHOLD = 0.85;
+const MEDIAN_WINDOW = 7;
 // If the singer stays silent/noisy this long, drop the rolling window so the
 // next phrase doesn't inherit stale pitch from the previous one.
 const SILENCE_RESET_MS = 250;

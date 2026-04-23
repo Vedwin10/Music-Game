@@ -3,7 +3,6 @@ import { startPitchLoop } from '../audio/pitchDetector.js';
 import {
   tonicToMidi,
   scaleMidiNotes,
-  foldToUpperOctave,
   NOTE_NAMES,
 } from './musicMath.js';
 
@@ -30,14 +29,29 @@ const ROAD_HALF_W = 2.6;
 const STRIPE_SPACING = 2;
 const WORLD_Y_BOTTOM = 0.2;
 const WORLD_Y_TOP = 2.3;
-const SEMI_WORLD = (WORLD_Y_TOP - WORLD_Y_BOTTOM) / 18;
+// Single-octave view: tonic at the bottom, tonic+12 at the top. Pitch is not
+// folded — the player must sing in the octave above the tonic (e.g. C4→C5
+// when tonic=C). Multi-octave acceptance can come back later behind a flag.
+const SEMITONES_IN_VIEW = 12;
+const SEMI_WORLD = (WORLD_Y_TOP - WORLD_Y_BOTTOM) / SEMITONES_IN_VIEW;
+// Pitch outside [tonic - this, tonic + 12 + this] semitones is ignored so
+// stray harmonics/noise don't yank the ball to an edge.
+const PITCH_MARGIN_SEMI = 2;
 
 const BALL_R = 0.18;
 const WALL_HALFW = 2.4;
-const WALL_HALFH = 1.6;
+// Walls are all the same rectangle, anchored to the ground and rising to a
+// fixed height. The hole punched out at w.y is the only thing that moves
+// between walls — the board itself doesn't resize or float.
+const WALL_BOTTOM_Y = ROAD_Y;
+const WALL_TOP_Y = WORLD_Y_TOP + 0.9;
+// Ball idles below the tonic hole so the first wall (which always targets
+// the tonic) is NOT a free pass — the player has to actually sing up to it.
+const BALL_REST_Y = ROAD_Y + BALL_R;
 
 const WALL_TIME_GAP_S = 2.5;
-const LERP_Y = 0.3;
+const Y_TAU = 0.1;               // dt-based smoothing time constant for ball Y
+const SILENCE_MS = 180;          // no valid pitch for this long → ball sinks to rest
 const VFWD_TAU = 0.7;            // 1/K for first-order relaxation of forward velocity
 const BOUNCE_SPEED_MULT = 2.5;   // impulse = -baseSpeed * this on blocked contact
 
@@ -61,12 +75,21 @@ function scriptedNoteIndex(i, scaleLen) {
 }
 
 function midiToWorldY(midi, tonicMidi) {
-  const semi = midi - (tonicMidi - 4);
-  return WORLD_Y_BOTTOM + (semi / 18) * (WORLD_Y_TOP - WORLD_Y_BOTTOM);
+  const semi = midi - tonicMidi;
+  const clamped = Math.max(0, Math.min(SEMITONES_IN_VIEW, semi));
+  return WORLD_Y_BOTTOM + (clamped / SEMITONES_IN_VIEW) * (WORLD_Y_TOP - WORLD_Y_BOTTOM);
+}
+function hzToMidiLocal(hz) {
+  return 12 * Math.log2(hz / 440) + 69;
 }
 function hzToWorldY(hz, tonicMidi) {
-  const midi = 12 * Math.log2(hz / 440) + 69;
-  return midiToWorldY(midi, tonicMidi);
+  return midiToWorldY(hzToMidiLocal(hz), tonicMidi);
+}
+function isHzInRange(hz, tonicMidi) {
+  if (!(hz > 0)) return false;
+  const midi = hzToMidiLocal(hz);
+  return midi >= tonicMidi - PITCH_MARGIN_SEMI
+      && midi <= tonicMidi + SEMITONES_IN_VIEW + PITCH_MARGIN_SEMI;
 }
 
 function noteLabel(midi) {
@@ -78,8 +101,9 @@ function noteLabel(midi) {
 export default function GameCanvas({ settings, capture }) {
   const canvasRef = useRef(null);
   const pitchHzRef = useRef(null);
-  const hudRef = useRef({ score: 0, combo: 0, inTune: false });
-  const [hud, setHud] = useState({ score: 0, combo: 0, inTune: false });
+  const pitchAtRef = useRef(0);
+  const hudRef = useRef({ score: 0, combo: 0, inTune: false, pitchHz: null });
+  const [hud, setHud] = useState({ score: 0, combo: 0, inTune: false, pitchHz: null });
 
   useEffect(() => {
     const diff = DIFFICULTY[settings.difficulty] ?? DIFFICULTY.beginner;
@@ -93,7 +117,9 @@ export default function GameCanvas({ settings, capture }) {
     const state = {
       ballS: 0,
       vForward: baseSpeed,
-      ballY: midiToWorldY(tonicMidi, tonicMidi),
+      // Rest on the ground, below the tonic hole. Pitch drives it upward,
+      // and it sinks back down when the singer stops.
+      ballY: BALL_REST_Y,
       walls: [],
       wallsSpawned: 0,
       nextWallS: WALL_SPACING, // first wall one spacing ahead
@@ -104,7 +130,10 @@ export default function GameCanvas({ settings, capture }) {
     const stopPitch = startPitchLoop({
       ctx: capture.ctx,
       analyser: capture.analyser,
-      onPitch: (hz) => { pitchHzRef.current = hz; },
+      onPitch: (hz) => {
+        pitchHzRef.current = hz;
+        pitchAtRef.current = performance.now();
+      },
     });
 
     const canvas = canvasRef.current;
@@ -133,8 +162,8 @@ export default function GameCanvas({ settings, capture }) {
     let last = performance.now();
 
     const drawWall = (w, renderZ) => {
-      const tl = proj(-WALL_HALFW, w.y + WALL_HALFH, renderZ);
-      const br = proj(+WALL_HALFW, w.y - WALL_HALFH, renderZ);
+      const tl = proj(-WALL_HALFW, WALL_TOP_Y, renderZ);
+      const br = proj(+WALL_HALFW, WALL_BOTTOM_Y, renderZ);
       const center = proj(0, w.y, renderZ);
       const width = br.sx - tl.sx;
       const height = br.sy - tl.sy;
@@ -163,9 +192,12 @@ export default function GameCanvas({ settings, capture }) {
       g.lineWidth = 3;
       g.strokeRect(tl.sx + 1.5, tl.sy + 1.5, width - 3, height - 3);
 
-      // Note label (above the hole) — part of the wall surface, will be
-      // partially eaten by the hole punch below (looks intentional).
-      const labelWorld = proj(0, w.y + w.cutoutR + 0.5, renderZ);
+      // Note label — above the hole when there's room, otherwise below.
+      // Keeps the label inside the wall surface so it never clips off.
+      const labelAboveY = w.y + w.cutoutR + 0.5;
+      const labelBelowY = w.y - w.cutoutR - 0.5;
+      const labelWorldY = labelAboveY <= WALL_TOP_Y - 0.25 ? labelAboveY : labelBelowY;
+      const labelWorld = proj(0, labelWorldY, renderZ);
       const fontPx = Math.max(14, 0.6 * (FOCAL / renderZ));
       g.font = `bold ${fontPx}px system-ui, -apple-system, sans-serif`;
       g.textAlign = 'center';
@@ -197,13 +229,24 @@ export default function GameCanvas({ settings, capture }) {
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
 
-      // Pitch → world Y (lerped).
+      // Pitch → world Y. Single octave: only accept pitches near [tonic, tonic+12].
+      // On silence (no valid sample for SILENCE_MS), target the bottom so the ball
+      // rests there instead of hanging wherever the last note left it. Smoothing
+      // is dt-based so motion is framerate-independent and doesn't jitter.
       const hz = pitchHzRef.current;
-      if (hz && hz > 0) {
-        const folded = foldToUpperOctave(hz, tonicMidi);
-        const targetY = hzToWorldY(folded, tonicMidi);
-        state.ballY += (targetY - state.ballY) * LERP_Y;
+      const sinceHz = now - pitchAtRef.current;
+      const hzValid = hz && hz > 0 && sinceHz < SILENCE_MS && isHzInRange(hz, tonicMidi);
+      let targetY;
+      if (hzValid) {
+        targetY = hzToWorldY(hz, tonicMidi);
+      } else if (sinceHz >= SILENCE_MS) {
+        targetY = BALL_REST_Y;
+      } else {
+        // Short dropout (out-of-range blip, one stale frame) — hold.
+        targetY = state.ballY;
       }
+      const alphaY = 1 - Math.exp(-dt / Y_TAU);
+      state.ballY += (targetY - state.ballY) * alphaY;
 
       // Forward velocity relaxes toward baseSpeed (first-order). After a
       // bounce this carries vForward smoothly from a large negative impulse
@@ -357,8 +400,19 @@ export default function GameCanvas({ settings, capture }) {
       }
 
       const prev = hudRef.current;
-      if (prev.score !== state.score || prev.combo !== state.combo || prev.inTune !== inTune) {
-        const next = { score: state.score, combo: state.combo, inTune };
+      const pitchHz = hzValid ? hz : null;
+      // Avoid React re-renders for sub-Hz pitch wiggle — only push when it
+      // changes meaningfully, or on score/combo/tune changes.
+      const pitchChanged =
+        (pitchHz == null) !== (prev.pitchHz == null) ||
+        (pitchHz != null && Math.abs(pitchHz - (prev.pitchHz ?? 0)) > 1);
+      if (
+        prev.score !== state.score ||
+        prev.combo !== state.combo ||
+        prev.inTune !== inTune ||
+        pitchChanged
+      ) {
+        const next = { score: state.score, combo: state.combo, inTune, pitchHz };
         hudRef.current = next;
         setHud(next);
       }
@@ -374,6 +428,17 @@ export default function GameCanvas({ settings, capture }) {
   }, [capture, settings]);
 
   const mult = Math.min(1 + hud.combo / 5, 5);
+  const pitchLabel = hud.pitchHz
+    ? (() => {
+        const midi = 12 * Math.log2(hud.pitchHz / 440) + 69;
+        const rounded = Math.round(midi);
+        const pc = ((rounded % 12) + 12) % 12;
+        const octave = Math.floor(rounded / 12) - 1;
+        const cents = Math.round((midi - rounded) * 100);
+        const sign = cents > 0 ? '+' : '';
+        return `${NOTE_NAMES[pc]}${octave} ${sign}${cents}¢ · ${hud.pitchHz.toFixed(1)} Hz`;
+      })()
+    : '—';
 
   return (
     <div className="flex flex-col items-center gap-3">
@@ -388,6 +453,10 @@ export default function GameCanvas({ settings, capture }) {
             <span className="font-mono">{hud.combo}</span>
             <span className="ml-1 text-xs text-slate-500">×{mult.toFixed(1)}</span>
           </div>
+        </div>
+        <div className="font-mono text-xs text-slate-400">
+          <span className="text-slate-500">Pitch </span>
+          <span className={hud.pitchHz ? 'text-slate-200' : 'text-slate-600'}>{pitchLabel}</span>
         </div>
       </div>
       <canvas ref={canvasRef} className="rounded-xl border border-white/10 bg-slate-950" />
