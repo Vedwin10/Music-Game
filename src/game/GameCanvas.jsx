@@ -102,6 +102,13 @@ export default function GameCanvas({ settings, capture }) {
   const canvasRef = useRef(null);
   const pitchHzRef = useRef(null);
   const pitchAtRef = useRef(0);
+  // Separate from pitchAtRef: time of the last sample that was BOTH recent
+  // AND in-range. Out-of-range noise (room hum, breath) routinely passes
+  // pitchy's clarity gate, which would otherwise keep bumping pitchAtRef and
+  // prevent the "no valid pitch → fall to rest" branch from ever firing —
+  // leading to a stepped fall as the ball alternates between holding and
+  // falling between noise blips.
+  const validPitchAtRef = useRef(0);
   const hudRef = useRef({ score: 0, combo: 0, inTune: false, pitchHz: null });
   const [hud, setHud] = useState({ score: 0, combo: 0, inTune: false, pitchHz: null });
 
@@ -236,10 +243,12 @@ export default function GameCanvas({ settings, capture }) {
       const hz = pitchHzRef.current;
       const sinceHz = now - pitchAtRef.current;
       const hzValid = hz && hz > 0 && sinceHz < SILENCE_MS && isHzInRange(hz, tonicMidi);
+      if (hzValid) validPitchAtRef.current = now;
+      const sinceValid = now - validPitchAtRef.current;
       let targetY;
       if (hzValid) {
         targetY = hzToWorldY(hz, tonicMidi);
-      } else if (sinceHz >= SILENCE_MS) {
+      } else if (sinceValid >= SILENCE_MS) {
         targetY = BALL_REST_Y;
       } else {
         // Short dropout (out-of-range blip, one stale frame) — hold.
@@ -452,7 +461,7 @@ export default function GameCanvas({ settings, capture }) {
 
   return (
     <div className="flex flex-col items-center gap-3">
-      <div className="flex w-full max-w-[900px] items-center justify-between text-sm">
+      <div className="flex w-full max-w-[900px] flex-col gap-1 text-sm">
         <div className="flex items-center gap-4">
           <div>
             <span className="text-slate-400">Score </span>
@@ -464,7 +473,9 @@ export default function GameCanvas({ settings, capture }) {
             <span className="ml-1 text-xs text-slate-500">×{mult.toFixed(1)}</span>
           </div>
         </div>
-        <div className="font-mono text-xs text-slate-400">
+        {/* Full-width row below Score/Combo so long pitch labels never wrap
+            and push the canvas down on narrow (mobile) viewports. */}
+        <div className="whitespace-nowrap font-mono text-xs text-slate-400">
           <span className="text-slate-500">Pitch </span>
           <span className={hud.pitchHz ? 'text-slate-200' : 'text-slate-600'}>{pitchLabel}</span>
         </div>
