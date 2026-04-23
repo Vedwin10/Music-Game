@@ -215,8 +215,8 @@ export default function GameCanvas({ settings, capture }) {
       g.fill();
       g.globalCompositeOperation = 'source-over';
 
-      // Ring around the hole.
-      g.strokeStyle = 'rgba(165,180,252,0.95)';
+      // Ring around the hole (Miami orange).
+      g.strokeStyle = 'rgba(249,115,22,0.95)';
       g.lineWidth = 2;
       g.beginPath();
       g.arc(center.sx, center.sy, holeR, 0, Math.PI * 2);
@@ -315,8 +315,8 @@ export default function GameCanvas({ settings, capture }) {
 
       // --- Render ---
       const sky = g.createLinearGradient(0, 0, 0, CY);
-      sky.addColorStop(0, '#0b1020');
-      sky.addColorStop(1, '#1e1b4b');
+      sky.addColorStop(0, '#0a1814');
+      sky.addColorStop(1, '#064e3b');
       g.fillStyle = sky;
       g.fillRect(0, 0, CANVAS_W, CY);
       const ground = g.createLinearGradient(0, CY, 0, CANVAS_H);
@@ -338,7 +338,7 @@ export default function GameCanvas({ settings, capture }) {
       g.lineTo(farL.sx, farL.sy);
       g.closePath();
       g.fill();
-      g.strokeStyle = 'rgba(129,140,248,0.35)';
+      g.strokeStyle = 'rgba(16,185,129,0.35)';
       g.lineWidth = 2;
       g.beginPath();
       g.moveTo(nearL.sx, nearL.sy); g.lineTo(farL.sx, farL.sy);

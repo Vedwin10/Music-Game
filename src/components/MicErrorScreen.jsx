@@ -51,7 +51,7 @@ export default function MicErrorScreen({ code, detail, onRetry }) {
       <button
         type="button"
         onClick={handle}
-        className="rounded-xl bg-indigo-500 px-6 py-3 text-base font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:bg-indigo-400 active:scale-[0.99]"
+        className="rounded-xl bg-orange-500 px-6 py-3 text-base font-semibold text-white shadow-lg shadow-orange-500/20 transition hover:bg-orange-400 active:scale-[0.99]"
       >
         {msg.cta}
       </button>
